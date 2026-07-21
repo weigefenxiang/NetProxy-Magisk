@@ -24,6 +24,8 @@ readonly TPROXY_CONF="$TPROXY_DIR/tproxy.conf"
 readonly RUN_DIR="/dev/netproxy"
 readonly LAST_CHECK_FILE="$RUN_DIR/wifi_last_check"  # 防抖时间戳 (跨 inotifyd 进程)
 readonly RT_TABLES="/data/misc/net/rt_tables"        # inotifyd 监听目标
+readonly POLL_PID_FILE="$RUN_DIR/netmon_poll.pid"
+readonly POLL_INTERVAL=5
 readonly LOG_FILE="$MODDIR/logs/service.log"
 readonly LOG_TAG="netmon"
 readonly DEBOUNCE_SEC=2  # 防抖窗口(秒)，抗 WiFi 抖动
@@ -259,6 +261,38 @@ load_wifi_conf() {
   WIFI_INTERFACE="$(read_conf "$TPROXY_CONF" "WIFI_INTERFACE" "wlan0")"
   PROXY_IPV6="$(read_conf "$TPROXY_CONF" "PROXY_IPV6" "0")"
 }
+# 停止 SSID 轮询进程
+stop_poller() {
+  local pid
+
+  if [ -f "$POLL_PID_FILE" ]; then
+    pid="$(cat "$POLL_PID_FILE" 2> /dev/null)"
+
+    case "$pid" in
+      ""|*[!0-9]*) ;;
+      *)
+        if [ -f "/proc/$pid/cmdline" ] &&
+           grep -q "netmon.sh" "/proc/$pid/cmdline" 2> /dev/null &&
+           grep -q "poll" "/proc/$pid/cmdline" 2> /dev/null; then
+          kill "$pid" 2> /dev/null || true
+        fi
+        ;;
+    esac
+
+    rm -f "$POLL_PID_FILE"
+  fi
+}
+
+# 每隔数秒重新检查当前网络
+cmd_poll() {
+  mkdir -p "$RUN_DIR" 2> /dev/null || true
+  printf "%s" "$$" > "$POLL_PID_FILE"
+
+  while [ "$(cat "$POLL_PID_FILE" 2> /dev/null)" = "$$" ]; do
+    cmd_eval
+    sleep "$POLL_INTERVAL"
+  done
+}
 
 #######################################
 # 停止 netmon 的 inotifyd 守护进程
@@ -266,6 +300,8 @@ load_wifi_conf() {
 #######################################
 stop_watcher() {
   local pid
+
+  stop_poller
   for pid in $(pidof inotifyd 2> /dev/null); do
     if [ -f "/proc/$pid/cmdline" ] && grep -q "netmon.sh" "/proc/$pid/cmdline" 2> /dev/null; then
       kill "$pid" 2> /dev/null || true
@@ -279,9 +315,17 @@ stop_watcher() {
 #######################################
 start_watcher() {
   stop_watcher
-  # rt_tables 尚未就绪时后台等待，避免 inotifyd 监听失败
-  ( i=0; while [ ! -f "$RT_TABLES" ] && [ "$i" -lt 20 ]; do sleep 3; i=$((i + 1)); done
-    [ -f "$RT_TABLES" ] && nohup inotifyd "$0" "$RT_TABLES" > /dev/null 2>&1 & ) &
+
+  ( i=0; while [ ! -f "$RT_TABLES" ] && [ "$i" -lt 20 ]; do
+      sleep 3
+      i=$((i + 1))
+    done
+    [ -f "$RT_TABLES" ] &&
+      nohup inotifyd "$0" "$RT_TABLES" > /dev/null 2>&1 &
+  ) &
+
+  # inotify 没有收到 WiFi 切换事件时，由轮询兜底
+  nohup "$0" poll > /dev/null 2>&1 &
 }
 
 #######################################
@@ -343,6 +387,7 @@ main() {
     sync) cmd_sync ;;
     stop) stop_watcher ;;
     eval) shift 2> /dev/null || true; cmd_eval "$@" ;;
+    poll) cmd_poll ;;
     # inotifyd 以 "<事件字符> <监听目录> [文件名]" 回调，首参为事件字符
     *) on_inotify_event "${1:-}" ;;
   esac
