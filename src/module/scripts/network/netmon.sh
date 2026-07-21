@@ -289,8 +289,12 @@ cmd_poll() {
   printf "%s" "$$" > "$POLL_PID_FILE"
 
   while [ "$(cat "$POLL_PID_FILE" 2> /dev/null)" = "$$" ]; do
-    cmd_eval
     sleep "$POLL_INTERVAL"
+
+    # 睡眠期间可能已被停止或替换
+    [ "$(cat "$POLL_PID_FILE" 2> /dev/null)" = "$$" ] || break
+
+    cmd_eval
   done
 }
 
