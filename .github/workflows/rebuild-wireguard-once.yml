@@ -1,0 +1,242 @@
+name: 临时重建 WireGuard sing-box 内核
+
+on:
+  push:
+    branches: [fix/wireguard-core-build]
+    paths:
+      - '.github/workflows/rebuild-wireguard-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 拉取 NetProxy
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 修正 WireGuard 构建清单与更新器
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import json
+
+          resources_path = Path('.github/resources.json')
+          resources = json.loads(resources_path.read_text(encoding='utf-8'))
+          tags = resources['singBox']['buildTags']
+          if 'with_wireguard' not in tags:
+              if 'with_gvisor' in tags:
+                  tags.insert(tags.index('with_gvisor') + 1, 'with_wireguard')
+              else:
+                  tags.append('with_wireguard')
+          resources_path.write_text(
+              json.dumps(resources, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+
+          workflow_path = Path('.github/workflows/update-resources.yml')
+          workflow = workflow_path.read_text(encoding='utf-8')
+
+          old_detection = '''          changed=false
+          if [ "$latest" != "$current" ]; then
+            changed=true
+          fi
+'''
+          new_detection = '''          normalize_tags() {
+            printf '%s\\n' "$1" |
+              tr ',' '\\n' |
+              sed '/^$/d' |
+              LC_ALL=C sort |
+              paste -sd, -
+          }
+
+          changed=false
+          reason="none"
+          if [ "$latest" != "$current" ]; then
+            changed=true
+            reason="version"
+          elif [ ! -s "$target" ]; then
+            changed=true
+            reason="missing-binary"
+          else
+            embedded_tags="$({
+              go version -m "$target" 2>/dev/null || true
+            } | awk '$1 == "build" && $2 ~ /^-tags=/ { sub(/^-tags=/, "", $2); gsub(/"/, "", $2); print $2; exit }')"
+            desired_tags="$(normalize_tags "$build_tags")"
+            actual_tags="$(normalize_tags "$embedded_tags")"
+            if [ "$actual_tags" != "$desired_tags" ]; then
+              changed=true
+              reason="build-tags"
+            fi
+          fi
+
+          echo "sing-box rebuild check: changed=$changed reason=$reason"
+'''
+          if old_detection not in workflow:
+              raise SystemExit('sing-box changed detection block not found')
+          workflow = workflow.replace(old_detection, new_detection, 1)
+
+          old_validation = '''          go version -m .sing-box-source/sing-box | grep -q "${LATEST_VERSION#v}"
+          go version -m .sing-box-source/sing-box | grep -q 'with_ebpf'
+          go version -m .sing-box-source/sing-box | grep -q 'with_gvisor'
+          go version -m .sing-box-source/sing-box | grep -q 'with_tailscale'
+'''
+          new_validation = '''          build_info="$(go version -m .sing-box-source/sing-box)"
+          printf '%s\\n' "$build_info" | grep -q "${LATEST_VERSION#v}"
+          embedded_tags="$(printf '%s\\n' "$build_info" | awk '$1 == "build" && $2 ~ /^-tags=/ { sub(/^-tags=/, "", $2); gsub(/"/, "", $2); print $2; exit }')"
+          normalized_embedded=",$embedded_tags,"
+          for required_tag in $(printf '%s' "$TAGS" | tr ',' ' '); do
+            case "$normalized_embedded" in
+              *",$required_tag,"*) ;;
+              *)
+                echo "::error::sing-box 构建缺少标签: $required_tag"
+                exit 1
+                ;;
+            esac
+          done
+'''
+          if old_validation not in workflow:
+              raise SystemExit('sing-box validation block not found')
+          workflow = workflow.replace(old_validation, new_validation, 1)
+
+          old_checks = 'checks: ["ARM64 架构", "版本信息匹配", "包含 eBPF", "包含 Tailscale", "已同步 JSON Schema"]'
+          new_checks = 'checks: ["ARM64 架构", "版本信息匹配", "构建标签与清单一致", "包含 WireGuard", "已同步 JSON Schema"]'
+          if old_checks not in workflow:
+              raise SystemExit('sing-box report checks not found')
+          workflow = workflow.replace(old_checks, new_checks, 1)
+          workflow_path.write_text(workflow, encoding='utf-8')
+          PY
+
+          version="$(jq -r '.singBox.currentVersion' .github/resources.json)"
+          tags="$(jq -r '.singBox.buildTags | join(",")' .github/resources.json)"
+          test -n "$version"
+          test -n "$tags"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: 拉取 reF1nd sing-box 源码
+        uses: actions/checkout@v7
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ steps.prepare.outputs.version }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+          path: .sing-box-source
+
+      - name: 确定 Go 工具链
+        id: go_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_version="$(awk '$1 == "go" { print $2; exit }' src/native/netproxy/go.mod)"
+          singbox_version="$(awk '$1 == "go" { print $2; exit }' .sing-box-source/go.mod)"
+          selected_version="$(printf '%s\n%s\n' "$native_version" "$singbox_version" | sort -V | tail -n 1)"
+          test -n "$selected_version"
+          echo "version=$selected_version" >> "$GITHUB_OUTPUT"
+
+      - name: 配置 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ steps.go_version.outputs.version }}
+          cache-dependency-path: .sing-box-source/go.sum
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 重建并校验 sing-box
+        env:
+          TAGS: ${{ steps.prepare.outputs.tags }}
+          CGO_ENABLED: '0'
+          GOOS: android
+          GOARCH: arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C .sing-box-source build
+          test -s .sing-box-source/sing-box
+          file .sing-box-source/sing-box | grep -q 'ARM aarch64'
+
+          build_info="$(go version -m .sing-box-source/sing-box)"
+          printf '%s\n' "$build_info" | grep -q "${{ steps.prepare.outputs.version }}"
+          embedded_tags="$(printf '%s\n' "$build_info" | awk '$1 == "build" && $2 ~ /^-tags=/ { sub(/^-tags=/, "", $2); gsub(/"/, "", $2); print $2; exit }')"
+          normalized_embedded=",$embedded_tags,"
+          for required_tag in $(printf '%s' "$TAGS" | tr ',' ' '); do
+            case "$normalized_embedded" in
+              *",$required_tag,"*) ;;
+              *)
+                echo "::error::sing-box 构建缺少标签: $required_tag"
+                exit 1
+                ;;
+            esac
+          done
+
+          (
+            unset GOOS GOARCH CGO_ENABLED
+            make -C .sing-box-source schema
+          )
+          node .github/scripts/check-ebpf-schema.mjs .sing-box-source/docs/schema.json
+
+          install -m 0755 .sing-box-source/sing-box src/module/bin/sing-box
+          install -m 0644 .sing-box-source/docs/schema.json \
+            src/android/app/src/main/assets/sing-box.schema.json
+
+          go version -m src/module/bin/sing-box | grep -q 'with_wireguard'
+
+      - name: 验证 Native 与变更
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd src/native/netproxy
+            go test ./...
+            go vet ./...
+          )
+          rm -rf .sing-box-source
+          rm -f .github/workflows/rebuild-wireguard-once.yml
+          git diff --check
+
+          desired_tags="$(jq -r '.singBox.buildTags | join(",")' .github/resources.json)"
+          actual_tags="$(go version -m src/module/bin/sing-box | awk '$1 == "build" && $2 ~ /^-tags=/ { sub(/^-tags=/, "", $2); gsub(/"/, "", $2); print $2; exit }')"
+          normalize_tags() {
+            printf '%s\n' "$1" | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort | paste -sd, -
+          }
+          test "$(normalize_tags "$actual_tags")" = "$(normalize_tags "$desired_tags")"
+
+      - name: 提交临时分支构建结果
+        env:
+          BRANCH_NAME: fix/wireguard-core-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote origin "refs/heads/$BRANCH_NAME" | awk '{print $1}')"
+          if [ "$remote_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::分支在构建期间发生变化，拒绝覆盖"
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/resources.json \
+            .github/workflows/update-resources.yml \
+            .github/workflows/rebuild-wireguard-once.yml \
+            src/module/bin/sing-box \
+            src/android/app/src/main/assets/sing-box.schema.json
+          git diff --cached --check
+          git diff --cached --quiet && {
+            echo '::error::没有生成任何变更'
+            exit 1
+          }
+          git commit -m 'fix(core): 启用 WireGuard Endpoint 支持' \
+            -m '为内置 reF1nd sing-box 增加 with_wireguard 构建标签并重建 Android arm64 内核。' \
+            -m '资源更新器同时比较已打包内核的 build tags，避免同版本标签变更被跳过。'
+          git push origin "HEAD:$BRANCH_NAME"
