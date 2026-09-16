@@ -140,6 +140,19 @@ func TestWriteWireGuardRuntimeBaseInsertsBeforeGenericPrivateDirect(t *testing.T
 	}
 }
 
+func TestPrivatePolicyServiceActionRestartsOnlyWhenPolicyChanges(t *testing.T) {
+	private := []netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")}
+	if got := privatePolicyServiceAction(private, append([]netip.Prefix(nil), private...)); got != "" {
+		t.Fatalf("相同 WG 私网策略不应重启服务: %q", got)
+	}
+	if got := privatePolicyServiceAction(private, nil); got != "restart" {
+		t.Fatalf("离开 WG 私网策略动作 = %q, want restart", got)
+	}
+	if got := privatePolicyServiceAction(nil, private); got != "restart" {
+		t.Fatalf("进入 WG 私网策略动作 = %q, want restart", got)
+	}
+}
+
 func mustMarshalRule(t *testing.T, rule map[string]jsontext.Value) jsontext.Value {
 	t.Helper()
 	content, err := json.Marshal(rule, json.Deterministic(true))

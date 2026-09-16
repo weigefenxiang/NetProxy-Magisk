@@ -276,17 +276,24 @@ func preparedBaseConfigPath(options Options, prepared PrepareResult) string {
 	return basePath
 }
 
-// syncRuntimeSelectorForPrivatePolicy 在 WG 私网接管范围变化时重载；其余切换继续走 Service API。
-func syncRuntimeSelectorForPrivatePolicy(ctx context.Context, options Options, before, after []netip.Prefix, active, inner string) error {
+func privatePolicyServiceAction(before, after []netip.Prefix) string {
 	if samePrefixSet(before, after) {
+		return ""
+	}
+	return "restart"
+}
+
+// syncRuntimeSelectorForPrivatePolicy 在 WG 私网接管范围变化时重启服务；其余切换继续走 Service API。
+func syncRuntimeSelectorForPrivatePolicy(ctx context.Context, options Options, before, after []netip.Prefix, active, inner string) error {
+	if privatePolicyServiceAction(before, after) == "" {
 		return syncRuntimeSelector(ctx, options, active, inner)
 	}
 	if !service.ProcessRunning(options.SingBoxPath) {
 		return nil
 	}
 	if options.SkipServiceReload {
-		return errors.New("WireGuard 私网路由策略变化，跳过嵌套服务 reload")
+		return errors.New("WireGuard 私网路由策略变化，跳过嵌套服务重启")
 	}
-	_, err := ManageService(ctx, options, "reload")
+	_, err := ManageService(ctx, options, "restart")
 	return err
 }
