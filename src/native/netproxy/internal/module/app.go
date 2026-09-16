@@ -279,10 +279,19 @@ func syncRuntimeSelector(ctx context.Context, options Options, active, inner str
 	return reloadErr
 }
 
-// retryRuntimeSelection 等待 reload 后的 selector 完成注册，再同步组内与顶层选择器。
+// retryRuntimeSelection 等待 selector 与 Provider 注册完成，再同步组内与顶层选择器。
 func retryRuntimeSelection(ctx context.Context, client *serviceapi.Client, options Options, active, inner string) error {
-	const backoff = 300 * time.Millisecond
-	deadline := time.Now().Add(minTimeout(options.RequestTimeout, 6*time.Second))
+	const (
+		backoff            = 300 * time.Millisecond
+		regularRetryWindow = 6 * time.Second
+	)
+	retryWindow := regularRetryWindow
+	if options.SkipServiceReload {
+		// start/reload 已经在生命周期锁内，不能再次 reload；Service API Ready 也不代表
+		// Provider-backed selector 已经完成注册，因此沿用核心的完整 ready 窗口等待。
+		retryWindow = serviceReadyTimeout
+	}
+	deadline := time.Now().Add(retryWindow)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		requestContext, cancel := context.WithTimeout(ctx, minTimeout(options.RequestTimeout, time.Second))
