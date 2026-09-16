@@ -136,7 +136,8 @@ func (c *Client) invoke(ctx context.Context, method string, request any, respons
 	if err != nil {
 		return err
 	}
-	content, err := c.doRequest(ctx, method, payload, false)
+	_, allowBodylessSuccess := response.(*emptyMessage)
+	content, err := c.doRequest(ctx, method, payload, false, allowBodylessSuccess)
 	if err != nil {
 		return err
 	}
@@ -187,7 +188,7 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	content, err := c.doRequest(ctx, methodSubscribeStatus, payload, true)
+	content, err := c.doRequest(ctx, methodSubscribeStatus, payload, true, false)
 	if err != nil {
 		return Status{}, err
 	}
@@ -227,7 +228,7 @@ func (c *Client) Groups(ctx context.Context) ([]Group, error) {
 	if err != nil {
 		return nil, err
 	}
-	content, err := c.doRequest(ctx, methodSubscribeGroups, payload, true)
+	content, err := c.doRequest(ctx, methodSubscribeGroups, payload, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +245,7 @@ func (c *Client) Outbounds(ctx context.Context) ([]GroupItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	content, err := c.doRequest(ctx, methodSubscribeOutbounds, payload, true)
+	content, err := c.doRequest(ctx, methodSubscribeOutbounds, payload, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +258,7 @@ func (c *Client) Outbounds(ctx context.Context) ([]GroupItem, error) {
 
 const maxFrameSize = 32 << 20
 
-func (c *Client) doRequest(ctx context.Context, method string, payload []byte, firstDataFrameOnly bool) ([]byte, error) {
+func (c *Client) doRequest(ctx context.Context, method string, payload []byte, firstDataFrameOnly bool, allowBodylessSuccess bool) ([]byte, error) {
 	var requestBody bytes.Buffer
 	requestBody.WriteByte(0)
 	if err := binary.Write(&requestBody, binary.BigEndian, uint32(len(payload))); err != nil {
@@ -301,6 +302,9 @@ func (c *Client) doRequest(ctx context.Context, method string, payload []byte, f
 				// 数据帧已经完整读取时可以安全解码；明确的 gRPC 错误帧仍在上方处理。
 				if firstData != nil {
 					return firstData, nil
+				}
+				if allowBodylessSuccess {
+					return nil, nil
 				}
 				return nil, errors.New("Service API response ended without gRPC status")
 			}
