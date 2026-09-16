@@ -277,6 +277,11 @@ func reloadConfigSnapshot(ctx context.Context, options Options, journal configAp
 			return fmt.Errorf("旧运行时快照 %s 不可用: %w", name, err)
 		}
 	}
+	if prepared.Base != "" {
+		if _, err := os.Stat(prepared.Base); err != nil {
+			return fmt.Errorf("旧运行时快照 base 不可用: %w", err)
+		}
+	}
 	reloadOptions := options
 	reloadOptions.SkipServiceReload = true
 	return reloadPreparedService(ctx, reloadOptions, prepared, false)
@@ -432,7 +437,7 @@ func newSingBoxCommand(options Options, prepared PrepareResult) (*exec.Cmd, *os.
 	if err != nil {
 		return nil, nil, err
 	}
-	command := exec.Command(options.SingBoxPath, "run", "-c", paths.SingBoxConfig(options.SingBoxDir),
+	command := exec.Command(options.SingBoxPath, "run", "-c", preparedBaseConfigPath(options, prepared),
 		"-c", prepared.Providers, "-c", prepared.Outbounds, "-c", prepared.EBPF)
 	command.Dir = options.SingBoxDir
 	command.Stdout = logFile
@@ -442,7 +447,7 @@ func newSingBoxCommand(options Options, prepared PrepareResult) (*exec.Cmd, *os.
 }
 
 func checkPreparedConfiguration(ctx context.Context, options Options, prepared PrepareResult) error {
-	command := exec.CommandContext(ctx, options.SingBoxPath, "check", "-c", paths.SingBoxConfig(options.SingBoxDir),
+	command := exec.CommandContext(ctx, options.SingBoxPath, "check", "-c", preparedBaseConfigPath(options, prepared),
 		"-c", prepared.Providers, "-c", prepared.Outbounds, "-c", prepared.EBPF)
 	command.Dir = options.SingBoxDir
 	command.Stdout = os.Stderr
@@ -577,7 +582,7 @@ func restoreReloadState(ctx context.Context, options Options, pid int, startedAt
 }
 
 func cleanupRuntimeFiles(options Options) {
-	for _, name := range []string{"providers.json", "outbounds.json", "ebpf.json"} {
+	for _, name := range []string{"base.json", "providers.json", "outbounds.json", "ebpf.json"} {
 		_ = os.Remove(filepath.Join(options.RuntimeDir, name))
 	}
 }

@@ -73,6 +73,7 @@ func NewOptions(moduleDir string) Options {
 // PrepareResult 描述一次运行时准备结果。
 type PrepareResult struct {
 	catalog.RuntimeResult
+	Base      string `json:"base,omitempty"`
 	Providers string `json:"providers"`
 	Outbounds string `json:"outbounds"`
 	EBPF      string `json:"ebpf"`
@@ -107,9 +108,25 @@ func Prepare(ctx context.Context, options Options, allowEmpty bool) (PrepareResu
 	if err != nil {
 		return PrepareResult{}, err
 	}
+	privateCIDRs, err := selectedWireGuardPrivateCIDRs(ctx, options, runtime.SelectorMode, runtime.SelectedNodeRef)
+	if err != nil {
+		return PrepareResult{}, err
+	}
 	config, err := ebpf.Load(options.EBPFConfig)
 	if err != nil {
 		return PrepareResult{}, err
+	}
+	basePath := ""
+	if len(privateCIDRs) > 0 {
+		// eBPF 的私网旁路发生在 sing-box 路由之前；WG 需要先把这部分流量交回核心，
+		// 再由运行时 base.json 中的精确 CIDR 规则决定哪些私网进入 Proxy。
+		config.Local.BypassPrivateAddress = false
+		basePath = filepath.Join(options.RuntimeDir, "base.json")
+		if err := writeWireGuardRuntimeBase(paths.SingBoxConfig(options.SingBoxDir), basePath, privateCIDRs); err != nil {
+			return PrepareResult{}, err
+		}
+	} else {
+		_ = os.Remove(filepath.Join(options.RuntimeDir, "base.json"))
 	}
 	missingPackages, err := ebpf.WriteAtomic(ctx, ebpfPath, config)
 	if err != nil {
@@ -118,7 +135,7 @@ func Prepare(ctx context.Context, options Options, allowEmpty bool) (PrepareResu
 	for _, ref := range missingPackages {
 		logService(options, "WARN", "ebpf.package", "skipped", "分应用代理跳过未安装应用: %s", ref.String())
 	}
-	return PrepareResult{RuntimeResult: runtime, Providers: providers, Outbounds: outbounds, EBPF: ebpfPath}, nil
+	return PrepareResult{RuntimeResult: runtime, Base: basePath, Providers: providers, Outbounds: outbounds, EBPF: ebpfPath}, nil
 }
 
 func syncRuntimeSelection(ctx context.Context, options Options, runtime catalog.RuntimeResult) error {
@@ -158,7 +175,7 @@ func Check(ctx context.Context, options Options, allowEmpty bool) (PrepareResult
 	if options.SingBoxPath == "" {
 		return prepared, errors.New("sing-box 路径为空")
 	}
-	configPath := paths.SingBoxConfig(options.SingBoxDir)
+	configPath := preparedBaseConfigPath(options, prepared)
 	command := exec.CommandContext(ctx, options.SingBoxPath, "check", "-c", configPath,
 		"-c", prepared.Providers, "-c", prepared.Outbounds, "-c", prepared.EBPF)
 	command.Dir = options.SingBoxDir
@@ -178,6 +195,10 @@ func SelectNode(ctx context.Context, options Options, target, group string) (dat
 		return nil, err
 	}
 	module, err := moduleconfig.LoadModule(options.ModuleConfig)
+	if err != nil {
+		return nil, err
+	}
+	previousPrivateCIDRs, err := selectedWireGuardPrivateCIDRs(ctx, options, module.SelectorMode, module.SelectedNodeRef)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +229,7 @@ func SelectNode(ctx context.Context, options Options, target, group string) (dat
 		if err != nil {
 			return nil, err
 		}
-		if err := syncRuntimeSelector(ctx, options, "Auto/"+runtimeTag, ""); err != nil {
+		if err := syncRuntimeSelectorForPrivatePolicy(ctx, options, previousPrivateCIDRs, nil, "Auto/"+runtimeTag, ""); err != nil {
 			return nil, err
 		}
 		return map[string]string{"group_id": group, "mode": "urltest", "selected": "Auto/" + runtimeTag}, nil
@@ -228,18 +249,23 @@ func SelectNode(ctx context.Context, options Options, target, group string) (dat
 		}
 		return nil, fmt.Errorf("未找到节点: %s/%s", groupID, tag)
 	}
+	nextReference := groupID + "/" + tag
+	nextPrivateCIDRs, err := selectedWireGuardPrivateCIDRs(ctx, options, "manual", nextReference)
+	if err != nil {
+		return nil, err
+	}
 	runtimeTag, err := catalog.RuntimeTag(ctx, options.CatalogRoot, groupID)
 	if err != nil {
 		return nil, err
 	}
 	if err := options.updateModule(ctx, map[string]string{
 		"ACTIVE_GROUP_ID": moduleconfig.Quote(groupID), "SELECTOR_MODE": "manual",
-		"SELECTED_NODE_REF": moduleconfig.Quote(groupID + "/" + tag),
+		"SELECTED_NODE_REF": moduleconfig.Quote(nextReference),
 	}); err != nil {
 		return nil, err
 	}
 	persisted = true
-	if err := syncRuntimeSelector(ctx, options, "Select/"+runtimeTag, runtimeTag+"/"+tag); err != nil {
+	if err := syncRuntimeSelectorForPrivatePolicy(ctx, options, previousPrivateCIDRs, nextPrivateCIDRs, "Select/"+runtimeTag, runtimeTag+"/"+tag); err != nil {
 		return nil, err
 	}
 	return map[string]string{"group_id": groupID, "mode": "manual", "selected": runtimeTag + "/" + tag}, nil
