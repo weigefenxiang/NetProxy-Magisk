@@ -1,5 +1,5 @@
 name: 验证 Android 管理器
-description: 复用托管 Ubuntu 的 SDK，启用 Gradle 构建缓存并执行单元测试和 Lint
+description: 复用托管 Ubuntu 的 SDK，启用 Gradle 构建缓存并执行单元测试、Lint 与 Debug 构建
 
 runs:
   using: composite
@@ -22,7 +22,7 @@ runs:
             'platforms;android-37.0' 'build-tools;37.0.0' --channel=1
         fi
 
-    - name: 执行 Android 单元测试与 Lint
+    - name: 执行 Android 单元测试、Lint 与 Debug 构建
       shell: bash
       working-directory: src/android
-      run: ./gradlew testDebugUnitTest lintDebug --build-cache --parallel --no-daemon
+      run: ./gradlew testDebugUnitTest lintDebug assembleDebug --build-cache --parallel --no-daemon
