@@ -110,6 +110,7 @@
       "with_utls",
       "with_clash_api",
       "with_gvisor",
+      "with_wireguard",
       "with_tailscale",
       "badlinkname",
       "tfogo_checklinkname0",
