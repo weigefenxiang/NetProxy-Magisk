@@ -115,9 +115,25 @@ func (c *cli) node(ctx context.Context, args []string) error {
 		if len(positionals) < 2 {
 			return errors.New("node edit 需要节点引用和节点内容")
 		}
+		serviceAction := ""
+		if service.ProcessRunning(options.SingBoxPath) {
+			var err error
+			serviceAction, err = currentWireGuardEditServiceAction(ctx, control, options.CatalogRoot, positionals[0])
+			if err != nil {
+				return err
+			}
+		}
 		data, err := moduleapp.NodeEdit(ctx, options, positionals[0], positionals[1], *allowInsecure)
 		if err != nil {
 			return err
+		}
+		if serviceAction != "" {
+			if options.SkipServiceReload {
+				return errors.New("当前 WireGuard 节点已编辑，跳过嵌套服务重启")
+			}
+			if _, err := moduleapp.ManageService(ctx, options, serviceAction); err != nil {
+				return err
+			}
 		}
 		writeJSON(os.Stdout, result{Schema: 1, OK: true, Code: "node.edited", Message: "节点已更新", Data: data})
 	case "remove":
@@ -137,6 +153,38 @@ func (c *cli) node(ctx context.Context, args []string) error {
 		return usageError("用法: netproxyctl node list|snapshot|current|show|get|export|delay|add|import|edit|remove|use")
 	}
 	return nil
+}
+
+func currentWireGuardEditServiceAction(ctx context.Context, control service.Options, catalogRoot, reference string) (string, error) {
+	group, tag, ok := splitReference(reference)
+	if !ok {
+		return "", nil
+	}
+	group, err := catalog.ResolveGroup(ctx, catalogRoot, group)
+	if err != nil {
+		return "", err
+	}
+	canonicalReference := group + "/" + tag
+	selection, err := service.ReadSelection(ctx, control)
+	if err != nil {
+		return "", err
+	}
+	if selection.SelectorMode != "manual" || selection.SelectedNodeRef != canonicalReference {
+		return "", nil
+	}
+	document, err := catalog.GroupNode(ctx, catalogRoot, group, tag)
+	if err != nil {
+		return "", err
+	}
+	wireGuard := len(document.Endpoints) == 1 && document.Endpoints[0].Type == "wireguard"
+	return wireGuardEditServiceAction(selection.SelectorMode, selection.SelectedNodeRef, canonicalReference, wireGuard), nil
+}
+
+func wireGuardEditServiceAction(selectorMode, selectedReference, editedReference string, wireGuard bool) string {
+	if selectorMode == "manual" && selectedReference == editedReference && wireGuard {
+		return "restart"
+	}
+	return ""
 }
 
 func second(values []string) string {
