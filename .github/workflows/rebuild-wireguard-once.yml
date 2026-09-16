@@ -2,9 +2,8 @@ name: 临时重建 WireGuard sing-box 内核
 
 on:
   push:
-    branches: [fix/wireguard-core-build]
-    paths:
-      - '.github/workflows/rebuild-wireguard-once.yml'
+    branches:
+      - fix/wireguard-core-build
 
 permissions:
   contents: write
@@ -19,8 +18,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 修正 WireGuard 构建清单与更新器
-        id: prepare
+      - name: 拉取 reF1nd sing-box 源码
+        uses: actions/checkout@v7
+        with:
+          repository: reF1nd/sing-box
+          ref: v1.15.0-alpha.3-reF1nd
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+          path: .sing-box-source
+
+      - name: 配置 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache-dependency-path: .sing-box-source/go.sum
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 修正构建清单与资源更新器
         shell: bash
         run: |
           set -euo pipefail
@@ -114,48 +133,9 @@ jobs:
           workflow_path.write_text(workflow, encoding='utf-8')
           PY
 
-          version="$(jq -r '.singBox.currentVersion' .github/resources.json)"
-          tags="$(jq -r '.singBox.buildTags | join(",")' .github/resources.json)"
-          test -n "$version"
-          test -n "$tags"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
-
-      - name: 拉取 reF1nd sing-box 源码
-        uses: actions/checkout@v7
-        with:
-          repository: reF1nd/sing-box
-          ref: ${{ steps.prepare.outputs.version }}
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-          path: .sing-box-source
-
-      - name: 确定 Go 工具链
-        id: go_version
-        shell: bash
-        run: |
-          set -euo pipefail
-          native_version="$(awk '$1 == "go" { print $2; exit }' src/native/netproxy/go.mod)"
-          singbox_version="$(awk '$1 == "go" { print $2; exit }' .sing-box-source/go.mod)"
-          selected_version="$(printf '%s\n%s\n' "$native_version" "$singbox_version" | sort -V | tail -n 1)"
-          test -n "$selected_version"
-          echo "version=$selected_version" >> "$GITHUB_OUTPUT"
-
-      - name: 配置 Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: ${{ steps.go_version.outputs.version }}
-          cache-dependency-path: .sing-box-source/go.sum
-
-      - name: 配置 Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 24
-
       - name: 重建并校验 sing-box
         env:
-          TAGS: ${{ steps.prepare.outputs.tags }}
+          TAGS: with_quic,with_utls,with_clash_api,with_gvisor,with_wireguard,with_tailscale,badlinkname,tfogo_checklinkname0,with_ebpf
           CGO_ENABLED: '0'
           GOOS: android
           GOARCH: arm64
@@ -167,7 +147,7 @@ jobs:
           file .sing-box-source/sing-box | grep -q 'ARM aarch64'
 
           build_info="$(go version -m .sing-box-source/sing-box)"
-          printf '%s\n' "$build_info" | grep -q "${{ steps.prepare.outputs.version }}"
+          printf '%s\n' "$build_info" | grep -q 'v1.15.0-alpha.3-reF1nd\|1.15.0-alpha.3-reF1nd'
           embedded_tags="$(printf '%s\n' "$build_info" | awk '$1 == "build" && $2 ~ /^-tags=/ { sub(/^-tags=/, "", $2); gsub(/"/, "", $2); print $2; exit }')"
           normalized_embedded=",$embedded_tags,"
           for required_tag in $(printf '%s' "$TAGS" | tr ',' ' '); do
@@ -189,10 +169,11 @@ jobs:
           install -m 0755 .sing-box-source/sing-box src/module/bin/sing-box
           install -m 0644 .sing-box-source/docs/schema.json \
             src/android/app/src/main/assets/sing-box.schema.json
-
           go version -m src/module/bin/sing-box | grep -q 'with_wireguard'
 
-      - name: 验证 Native 与变更
+      - name: 验证并提交临时分支结果
+        env:
+          BRANCH_NAME: fix/wireguard-core-build
         shell: bash
         run: |
           set -euo pipefail
@@ -201,6 +182,7 @@ jobs:
             go test ./...
             go vet ./...
           )
+
           rm -rf .sing-box-source
           rm -f .github/workflows/rebuild-wireguard-once.yml
           git diff --check
@@ -212,12 +194,6 @@ jobs:
           }
           test "$(normalize_tags "$actual_tags")" = "$(normalize_tags "$desired_tags")"
 
-      - name: 提交临时分支构建结果
-        env:
-          BRANCH_NAME: fix/wireguard-core-build
-        shell: bash
-        run: |
-          set -euo pipefail
           remote_sha="$(git ls-remote origin "refs/heads/$BRANCH_NAME" | awk '{print $1}')"
           if [ "$remote_sha" != "$GITHUB_SHA" ]; then
             echo "::error::分支在构建期间发生变化，拒绝覆盖"
