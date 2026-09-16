@@ -285,12 +285,18 @@ func (c *Client) doRequest(ctx context.Context, method string, payload []byte, f
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("Service API HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
 	}
+	if grpcErr := grpcStatusError(response.Header); grpcErr != nil {
+		return nil, grpcErr
+	}
 
 	var firstData []byte
 	for {
 		var header [5]byte
 		if _, err = io.ReadFull(response.Body, header[:]); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if grpcErr := grpcStatusError(response.Trailer); grpcErr != nil {
+					return nil, grpcErr
+				}
 				// reF1nd 的部分 unary RPC 只发送完整数据帧，不附带 trailer。
 				// 数据帧已经完整读取时可以安全解码；明确的 gRPC 错误帧仍在上方处理。
 				if firstData != nil {
@@ -324,6 +330,25 @@ func (c *Client) doRequest(ctx context.Context, method string, payload []byte, f
 			}
 		}
 	}
+}
+
+func grpcStatusError(header http.Header) error {
+	rawStatus := strings.TrimSpace(header.Get("Grpc-Status"))
+	if rawStatus == "" {
+		return nil
+	}
+	statusCode, err := strconv.Atoi(rawStatus)
+	if err != nil {
+		return fmt.Errorf("invalid gRPC status %q", rawStatus)
+	}
+	if statusCode == 0 {
+		return nil
+	}
+	statusMessage, _ := url.PathUnescape(strings.TrimSpace(header.Get("Grpc-Message")))
+	if statusMessage == "" {
+		statusMessage = "unknown error"
+	}
+	return fmt.Errorf("gRPC status %d: %s", statusCode, statusMessage)
 }
 
 func parseTrailer(content []byte) error {
