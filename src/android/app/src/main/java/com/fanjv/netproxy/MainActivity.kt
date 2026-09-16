@@ -38,7 +38,7 @@ import com.fanjv.netproxy.core.ui.theme.NetProxyTheme
 import com.fanjv.netproxy.feature.about.presentation.AboutScreen
 import com.fanjv.netproxy.feature.apps.presentation.AppsScreen
 import com.fanjv.netproxy.feature.catalog.presentation.nodes.CatalogNodesViewModel
-import com.fanjv.netproxy.feature.catalog.presentation.nodes.edit.SingBoxNodeEditScreen
+import com.fanjv.netproxy.feature.catalog.presentation.nodes.editor.SingBoxNodeEditScreen
 import com.fanjv.netproxy.feature.catalog.presentation.nodes.list.CatalogNodesScreen
 import com.fanjv.netproxy.feature.catalog.presentation.subscriptions.SubscriptionDetailsScreen
 import com.fanjv.netproxy.feature.catalog.presentation.subscriptions.SubscriptionEditorScreen
