@@ -139,6 +139,7 @@ func parseRaw(ctx context.Context, content string, allowInsecure bool) (provider
 }
 
 func finish(document provider.Document, diagnostics []provider.Diagnostic, allowInsecure bool) (provider.ParseResult, error) {
+	provider.ApplyCompatibilityDefaults(&document)
 	provider.NormalizeTags(&document)
 	if allowInsecure {
 		applyAllowInsecure(&document)

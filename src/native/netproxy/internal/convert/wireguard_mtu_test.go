@@ -40,25 +40,63 @@ func TestWireGuardEndpointMTUCompatibilityDefault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Document.Endpoints) != 1 {
-				t.Fatalf("expected one endpoint, got %d", len(result.Document.Endpoints))
-			}
-
-			var mtu uint32
-			switch endpointOptions := result.Document.Endpoints[0].Options.(type) {
-			case *option.WireGuardEndpointOptions:
-				if endpointOptions == nil {
-					t.Fatal("wireguard endpoint options are nil")
-				}
-				mtu = endpointOptions.MTU
-			case option.WireGuardEndpointOptions:
-				mtu = endpointOptions.MTU
-			default:
-				t.Fatalf("unexpected wireguard endpoint options type %T", result.Document.Endpoints[0].Options)
-			}
-			if mtu != test.want {
-				t.Fatalf("wireguard MTU = %d, want %d", mtu, test.want)
-			}
+			assertWireGuardMTU(t, result.Document.Endpoints, test.want)
 		})
+	}
+}
+
+func TestClashWireGuardEndpointMTUCompatibilityDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		mtuYAML string
+		want    uint32
+	}{
+		{name: "missing MTU gets compatibility default", mtuYAML: "", want: 1280},
+		{name: "explicit MTU is preserved", mtuYAML: "    mtu: 1420\n", want: 1420},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			content := `proxies:
+  - name: wg-test
+    type: wireguard
+    server: 198.51.100.10
+    port: 51820
+    ip: 10.0.0.2
+    private-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    public-key: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=
+    allowed-ips:
+      - 0.0.0.0/0
+` + test.mtuYAML
+
+			result, err := convert.Content(context.Background(), content, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertWireGuardMTU(t, result.Document.Endpoints, test.want)
+		})
+	}
+}
+
+func assertWireGuardMTU(t *testing.T, endpoints []option.Endpoint, want uint32) {
+	t.Helper()
+	if len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint, got %d", len(endpoints))
+	}
+
+	var mtu uint32
+	switch endpointOptions := endpoints[0].Options.(type) {
+	case *option.WireGuardEndpointOptions:
+		if endpointOptions == nil {
+			t.Fatal("wireguard endpoint options are nil")
+		}
+		mtu = endpointOptions.MTU
+	case option.WireGuardEndpointOptions:
+		mtu = endpointOptions.MTU
+	default:
+		t.Fatalf("unexpected wireguard endpoint options type %T", endpoints[0].Options)
+	}
+	if mtu != want {
+		t.Fatalf("wireguard MTU = %d, want %d", mtu, want)
 	}
 }
