@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestEnsureWireGuardMTUCompatibility(t *testing.T) {
+func TestEnsureWireGuardProviderMTUCompatibility(t *testing.T) {
 	tests := []struct {
 		name        string
 		mtuJSON     string
@@ -29,7 +29,7 @@ func TestEnsureWireGuardMTUCompatibility(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			changed, err := ensureWireGuardMTUCompatibility(context.Background(), path)
+			changed, err := ensureWireGuardProviderMTUCompatibility(context.Background(), path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +58,7 @@ func TestEnsureWireGuardMTUCompatibility(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeMigratesOnlyActiveWireGuardProvider(t *testing.T) {
+func TestBuildRuntimeMigratesWireGuardProvidersForHotSwitch(t *testing.T) {
 	root := t.TempDir()
 	writeGroup(t, root, "active", "活动分组", "local", "占位节点")
 	writeGroup(t, root, "inactive", "非活动分组", "local", "占位节点")
@@ -84,19 +84,14 @@ func TestBuildRuntimeMigratesOnlyActiveWireGuardProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	activeContent, err := os.ReadFile(activeProvider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(activeContent), `"mtu": 1280`) {
-		t.Fatalf("active provider was not migrated: %s", activeContent)
-	}
-	inactiveContent, err := os.ReadFile(inactiveProvider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(inactiveContent), `"mtu"`) {
-		t.Fatalf("inactive provider should not be rewritten: %s", inactiveContent)
+	for _, path := range []string{activeProvider, inactiveProvider} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(content), `"mtu": 1280`) {
+			t.Fatalf("runtime provider was not migrated for hot switch: %s", content)
+		}
 	}
 }
 

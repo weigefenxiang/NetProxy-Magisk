@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -13,16 +14,44 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 )
 
-func ensureWireGuardMTUCompatibility(ctx context.Context, path string) (bool, error) {
-	content, err := os.ReadFile(path)
+// ensureWireGuardMTUCompatibility upgrades legacy WireGuard providers before the
+// runtime references them. Runtime providers include every non-empty Catalog group,
+// so a group that is inactive during startup can later be selected through the
+// Service API without rebuilding runtime files. Probe sibling provider files as raw
+// JSON and only fully parse/write files that actually need the MTU compatibility
+// default; malformed unrelated providers keep the historical deferred-validation
+// behavior.
+func ensureWireGuardMTUCompatibility(ctx context.Context, activeProviderPath string) (bool, error) {
+	catalogRoot := filepath.Dir(filepath.Dir(activeProviderPath))
+	entries, err := os.ReadDir(catalogRoot)
 	if err != nil {
 		return false, err
+	}
+	changed := false
+	for _, entry := range entries {
+		if !isGroupDir(entry) {
+			continue
+		}
+		providerPath := filepath.Join(catalogRoot, entry.Name(), "provider.json")
+		migrated, err := ensureWireGuardProviderMTUCompatibility(ctx, providerPath)
+		if err != nil {
+			return false, fmt.Errorf("迁移分组 %s WireGuard MTU 兼容默认值失败: %w", entry.Name(), err)
+		}
+		changed = changed || migrated
+	}
+	return changed, nil
+}
+
+func ensureWireGuardProviderMTUCompatibility(ctx context.Context, path string) (bool, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		// BuildRuntime historically does not eagerly validate every provider path.
+		// Leave missing/unreadable providers to the existing runtime validation path.
+		return false, nil
 	}
 
 	var document map[string]jsontext.Value
 	if err := json.Unmarshal(content, &document); err != nil {
-		// BuildRuntime historically does not eagerly validate provider files. Leave
-		// malformed files to the existing sing-box/provider validation path.
 		return false, nil
 	}
 	rawEndpoints, exists := document["endpoints"]
