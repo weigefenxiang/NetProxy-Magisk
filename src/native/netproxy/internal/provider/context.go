@@ -8,6 +8,10 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
+// wireGuardCompatibilityMTU overrides sing-box's omitted-MTU default for imported WireGuard Endpoints.
+// 1280 is the IPv6 minimum MTU and is conservative for Android/mobile paths with extra encapsulation.
+const wireGuardCompatibilityMTU uint32 = 1280
+
 type outboundOptionsRegistry struct{}
 
 func (outboundOptionsRegistry) OptionTypes() []string {
@@ -78,7 +82,7 @@ func (endpointOptionsRegistry) CreateOptions(endpointType string) (any, bool) {
 	case C.TypeTailscale:
 		return new(option.TailscaleEndpointOptions), true
 	case C.TypeWireGuard:
-		return new(option.WireGuardEndpointOptions), true
+		return &option.WireGuardEndpointOptions{MTU: wireGuardCompatibilityMTU}, true
 	default:
 		return nil, false
 	}
