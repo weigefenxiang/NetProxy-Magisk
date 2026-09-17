@@ -312,6 +312,9 @@ func BuildRuntime(ctx context.Context, options RuntimeOptions) (RuntimeResult, e
 		activeIndex = 0
 		active = groups[0].ID
 	}
+	if _, err := ensureWireGuardMTUCompatibility(ctx, groups[activeIndex].ProviderPath); err != nil {
+		return RuntimeResult{}, fmt.Errorf("应用活动分组 WireGuard MTU 兼容默认值失败: %w", err)
+	}
 	selector := options.SelectorMode
 	if selector == "" {
 		selector = "urltest"
