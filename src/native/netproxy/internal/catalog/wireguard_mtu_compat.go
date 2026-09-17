@@ -55,7 +55,7 @@ func ensureWireGuardMTUCompatibility(ctx context.Context, path string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	document["endpoints"] = normalizedEndpoints
+	document["endpoints"] = jsontext.Value(normalizedEndpoints)
 	normalized, err := json.Marshal(document, json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return false, err
